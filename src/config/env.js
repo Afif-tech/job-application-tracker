@@ -18,6 +18,10 @@ const env = {
     name: process.env.DB_NAME || 'job_application',
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
+    // Enable TLS for managed DBs (TiDB Cloud, Aiven, etc.).
+    ssl: process.env.DB_SSL === 'true',
+    // Optional path to a CA bundle; usually unnecessary (public CA).
+    sslCaPath: process.env.DB_SSL_CA || '',
   },
 
   jwt: {
