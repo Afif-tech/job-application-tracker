@@ -28,6 +28,20 @@ npm run dev                 # http://localhost:4000
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | Signing secrets — change in production |
 | `JWT_ACCESS_EXPIRES` / `JWT_REFRESH_EXPIRES` | Token lifetimes (e.g. `15m`, `7d`) |
 | `UPLOAD_MAX_BYTES` | Max resume upload size (default 5 MB) |
+| `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET` | Cloudflare R2 (S3-compatible) object storage. Leave all blank to store uploads on local disk (dev). Set all four in production so resumes survive redeploys on ephemeral hosts. |
+
+## File storage
+
+Uploads use a pluggable storage driver (`src/config/storage.js`): **local disk** when the `R2_*`
+vars are unset, **Cloudflare R2** when they are all set. The app only stores an opaque storage key
+in `stored_path`, so switching backends needs no code or schema changes. Downloads are streamed
+through the auth-checked `/api/resumes/:id/download` route in both modes.
+
+### Creating an R2 bucket (free tier)
+
+1. Cloudflare dashboard → **R2** → create a bucket (e.g. `job-app-resumes`).
+2. **R2 → Manage API Tokens** → create a token with Object Read & Write for that bucket.
+3. Put the Account ID, Access Key ID, Secret Access Key, and bucket name into the `R2_*` env vars.
 
 ## Scripts
 

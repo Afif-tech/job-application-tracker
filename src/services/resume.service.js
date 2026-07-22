@@ -1,5 +1,3 @@
-const fs = require('fs/promises');
-const path = require('path');
 const {
   sequelize,
   Job,
@@ -10,37 +8,21 @@ const {
   User,
 } = require('../models');
 const { ROLES } = require('../constants');
-const { SUBDIRS, resolveStoredPath } = require('../config/multer');
+const storage = require('../config/storage');
 const AppError = require('../helpers/AppError');
 
 const UPLOADER_INCLUDE = { model: User, as: 'uploader' };
-
-/** Best-effort removal of a stored file; never throws. */
-async function unlinkQuiet(relativePath) {
-  if (!relativePath) return;
-  try {
-    await fs.unlink(resolveStoredPath(relativePath));
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      console.warn('[resume] could not delete file', relativePath, err.message);
-    }
-  }
-}
-
-function toRelative(file, kind) {
-  // stored relative to the uploads root, using forward slashes
-  return `${SUBDIRS[kind]}/${file.filename}`;
-}
 
 // ── Shared resumes ────────────────────────────────────────────────
 
 async function addShared(job, user, file) {
   if (!file) throw AppError.badRequest('A resume file is required');
+  const key = await storage.putFile('shared', file);
   const resume = await SharedResume.create({
     job_id: job.id,
     uploaded_by: user.id,
     original_name: file.originalname,
-    stored_path: toRelative(file, 'shared'),
+    stored_path: key,
     mime_type: file.mimetype,
     size_bytes: file.size,
   });
@@ -71,7 +53,7 @@ async function deleteShared(resumeUuid, user) {
 
   const stored = resume.stored_path;
   await resume.destroy(); // soft delete row
-  await unlinkQuiet(stored); // remove file from disk
+  await storage.deleteFile(stored); // remove object from storage
 }
 
 // ── Personal resumes (one per user per job) ───────────────────────
@@ -79,41 +61,51 @@ async function deleteShared(resumeUuid, user) {
 async function upsertPersonal(job, user, file) {
   if (!file) throw AppError.badRequest('A resume file is required');
 
-  return sequelize.transaction(async (transaction) => {
-    const existing = await UserJobResume.findOne({
-      where: { job_id: job.id, user_id: user.id },
-      transaction,
+  // Persist the new object first so a storage failure aborts before any DB write.
+  const key = await storage.putFile('personal', file);
+
+  try {
+    const result = await sequelize.transaction(async (transaction) => {
+      const existing = await UserJobResume.findOne({
+        where: { job_id: job.id, user_id: user.id },
+        transaction,
+      });
+
+      let oldPath = null;
+      let record;
+      if (existing) {
+        oldPath = existing.stored_path;
+        existing.original_name = file.originalname;
+        existing.stored_path = key;
+        existing.mime_type = file.mimetype;
+        existing.size_bytes = file.size;
+        record = await existing.save({ transaction });
+      } else {
+        record = await UserJobResume.create(
+          {
+            job_id: job.id,
+            user_id: user.id,
+            original_name: file.originalname,
+            stored_path: key,
+            mime_type: file.mimetype,
+            size_bytes: file.size,
+          },
+          { transaction }
+        );
+      }
+      return { dto: record.toJSONPublic(), oldPath };
     });
 
-    let oldPath = null;
-    let record;
-    if (existing) {
-      oldPath = existing.stored_path;
-      existing.original_name = file.originalname;
-      existing.stored_path = toRelative(file, 'personal');
-      existing.mime_type = file.mimetype;
-      existing.size_bytes = file.size;
-      record = await existing.save({ transaction });
-    } else {
-      record = await UserJobResume.create(
-        {
-          job_id: job.id,
-          user_id: user.id,
-          original_name: file.originalname,
-          stored_path: toRelative(file, 'personal'),
-          mime_type: file.mimetype,
-          size_bytes: file.size,
-        },
-        { transaction }
-      );
+    // Remove the replaced object only after the row commits.
+    if (result.oldPath && result.oldPath !== key) {
+      await storage.deleteFile(result.oldPath);
     }
-
-    // Remove the replaced file only after the row commits.
-    if (oldPath && oldPath !== record.stored_path) {
-      await unlinkQuiet(oldPath);
-    }
-    return record.toJSONPublic();
-  });
+    return result.dto;
+  } catch (err) {
+    // Roll back the orphaned upload if the DB write failed.
+    await storage.deleteFile(key);
+    throw err;
+  }
 }
 
 async function deletePersonal(job, user) {
@@ -123,7 +115,7 @@ async function deletePersonal(job, user) {
   if (!existing) throw AppError.notFound('You have no resume for this job');
   const stored = existing.stored_path;
   await existing.destroy();
-  await unlinkQuiet(stored);
+  await storage.deleteFile(stored);
 }
 
 // ── Download (auth-checked, works for both kinds) ─────────────────
@@ -133,7 +125,7 @@ async function deletePersonal(job, user) {
  * Shared resumes: any member of the job's list.
  * Personal resumes: the owning user only (private).
  *
- * @returns {{ absPath: string, downloadName: string, mimeType: string }}
+ * @returns {{ storedPath: string, downloadName: string, mimeType: string }}
  */
 async function resolveForDownload(resumeUuid, user) {
   // Try shared first.
@@ -148,7 +140,7 @@ async function resolveForDownload(resumeUuid, user) {
     });
     if (!membership) throw AppError.notFound('Resume not found');
     return {
-      absPath: resolveStoredPath(shared.stored_path),
+      storedPath: shared.stored_path,
       downloadName: shared.original_name,
       mimeType: shared.mime_type,
     };
@@ -161,7 +153,7 @@ async function resolveForDownload(resumeUuid, user) {
       throw AppError.notFound('Resume not found');
     }
     return {
-      absPath: resolveStoredPath(personal.stored_path),
+      storedPath: personal.stored_path,
       downloadName: personal.original_name,
       mimeType: personal.mime_type,
     };

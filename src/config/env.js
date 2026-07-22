@@ -31,6 +31,15 @@ const env = {
     maxBytes: parseInt(process.env.UPLOAD_MAX_BYTES || '5242880', 10),
   },
 
+  // Cloudflare R2 (S3-compatible) object storage. When all four are set the
+  // storage driver uses R2; otherwise it falls back to local disk.
+  r2: {
+    accountId: process.env.R2_ACCOUNT_ID || '',
+    accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
+    bucket: process.env.R2_BUCKET || '',
+  },
+
   get isProd() {
     return this.nodeEnv === 'production';
   },

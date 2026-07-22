@@ -1,8 +1,7 @@
-const fs = require('fs');
 const resumeService = require('../services/resume.service');
+const storage = require('../config/storage');
 const asyncHandler = require('../helpers/asyncHandler');
 const { sendSuccess } = require('../helpers/response');
-const AppError = require('../helpers/AppError');
 
 const uploadShared = asyncHandler(async (req, res) => {
   const resume = await resumeService.addShared(req.job, req.user, req.file);
@@ -29,17 +28,25 @@ const deleteMine = asyncHandler(async (req, res) => {
 });
 
 const download = asyncHandler(async (req, res) => {
-  const { absPath, downloadName, mimeType } = await resumeService.resolveForDownload(
+  const { storedPath, downloadName, mimeType } = await resumeService.resolveForDownload(
     req.params.resumeId,
     req.user
   );
 
-  if (!fs.existsSync(absPath)) {
-    throw AppError.notFound('File is missing from storage');
-  }
+  const { stream } = await storage.getStream(storedPath);
 
+  const safeName = encodeURIComponent(downloadName);
   res.setHeader('Content-Type', mimeType);
-  res.download(absPath, downloadName);
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${downloadName.replace(/"/g, '')}"; filename*=UTF-8''${safeName}`
+  );
+
+  stream.on('error', () => {
+    if (!res.headersSent) res.status(500).end();
+    else res.destroy();
+  });
+  stream.pipe(res);
 });
 
 module.exports = { uploadShared, deleteShared, uploadMine, deleteMine, download };
